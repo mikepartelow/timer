@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/gen2brain/beeep"
 	"github.com/muesli/termenv"
+
+	_ "embed"
 )
+
+//go:embed colorcycle.txt
+var colorcycle string
 
 func main() {
 	logger := slog.Default()
@@ -27,25 +34,12 @@ func main() {
 	_ = beeep.Beep(beeep.DefaultFreq, beeep.DefaultDuration)
 }
 
-func Countdown(duration time.Duration, output *termenv.Output) {
-	blinker := NewCycler(":", " ")
-	colors := NewCycler(
-		"165", "171", "177", "183", "189", "195",
-		"195", "189", "183", "177", "171", "165",
-	)
-
-	output.HideCursor()
-	defer output.ShowCursor()
-
+func TickUntil(finish time.Time, tick func()) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	finish := time.Now().Add(duration).Add(time.Second)
-
 	deadline, cancel := context.WithDeadline(context.Background(), finish)
 	defer cancel()
-
-	output.SaveCursorPosition()
 
 	for done := false; !done; {
 		select {
@@ -53,17 +47,41 @@ func Countdown(duration time.Duration, output *termenv.Output) {
 			done = true
 			break
 		case <-ticker.C:
-			remaining := time.Until(finish)
-			minutes := int(remaining.Minutes())
-			seconds := int(remaining.Seconds()) % 60
-
-			s := output.String(fmt.Sprintf("%02d%s%02d", minutes, blinker(), seconds))
-			s = s.Foreground(output.Color(colors()))
-
-			fmt.Print(s)
-			output.RestoreCursorPosition()
+			tick()
 		}
 	}
+}
+
+func Countdown(duration time.Duration, output *termenv.Output) {
+	blinker := NewCycler(":", " ")
+	colors := NewCycler(strings.Fields(colorcycle)...)
+
+	output.HideCursor()
+	go HandleInterrupt(output)
+	defer output.ShowCursor()
+
+	output.SaveCursorPosition()
+
+	finish := time.Now().Add(duration).Add(time.Second)
+	TickUntil(finish, func() {
+		remaining := time.Until(finish)
+		minutes := int(remaining.Minutes())
+		seconds := int(remaining.Seconds()) % 60
+
+		s := output.String(fmt.Sprintf("%02d%s%02d", minutes, blinker(), seconds))
+		s = s.Foreground(output.Color(colors()))
+
+		fmt.Print(s)
+		output.RestoreCursorPosition()
+	})
+}
+
+func HandleInterrupt(output *termenv.Output) {
+	sigchan := make(chan os.Signal, 1)
+	signal.Notify(sigchan, os.Interrupt)
+	<-sigchan
+	output.ShowCursor()
+	os.Exit(0)
 }
 
 func MustGetDuration(logger *slog.Logger) time.Duration {
